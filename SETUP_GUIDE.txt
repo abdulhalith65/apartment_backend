@@ -1,0 +1,23 @@
+APARTMENT RENT MANAGER - .env VERSION
+
+1. Open this folder in VS Code.
+2. Open the .env file.
+3. Replace only:
+   TIDB_PASSWORD=PASTE_YOUR_NEW_TIDB_PASSWORD_HERE
+   with your NEW TiDB password.
+4. Save the .env file.
+5. Open VS Code Terminal in this folder.
+6. Run:
+   python -m pip install -r requirements.txt
+7. Run:
+   python app.py
+8. Open in Chrome:
+   http://127.0.0.1:5000/db-test
+
+Expected:
+   {"success":true,...}
+
+IMPORTANT:
+- Do not send your password to ChatGPT.
+- Do not upload .env to GitHub.
+- If the password was previously exposed, regenerate it in TiDB Cloud first.
