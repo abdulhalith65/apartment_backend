@@ -31,8 +31,8 @@ TIDB_HOST = os.getenv(
 )
 
 TIDB_PORT = int(os.getenv("TIDB_PORT", "4000"))
-TIDB_USER = os.getenv("TIDB_USER", "")
-TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "")
+TIDB_USER = os.getenv("TIDB_USER", "3io5k8AZVpUgrQe.root")
+TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "FEhaGtskVc3rrTp2")
 TIDB_DATABASE = os.getenv("TIDB_DB_NAME", "test")
 TIDB_CA_PATH = os.getenv("TIDB_CA_PATH", "")
 
@@ -1309,6 +1309,445 @@ def download_all_bills(rent_month, rent_year):
         return jsonify({
             "success": False,
             "message": "Failed to generate monthly bills PDF",
+            "error": str(e)
+        }), 500
+
+    finally:
+        close_db(db, cursor)
+
+
+
+
+# =====================================================
+# MONTHLY RENT COLLECTION / SUMMARY
+# Supports /monthly-summary and /api/monthly-summary
+# =====================================================
+
+@app.route(
+    "/monthly-summary/<int:rent_month>/<int:rent_year>",
+    methods=["GET"]
+)
+@app.route(
+    "/api/monthly-summary/<int:rent_month>/<int:rent_year>",
+    methods=["GET"]
+)
+def monthly_summary(rent_month, rent_year):
+    db = None
+    cursor = None
+
+    try:
+        if rent_month < 1 or rent_month > 12:
+            return jsonify({
+                "success": False,
+                "message": "Invalid rent month"
+            }), 400
+
+        month_name = f"{rent_month:02d}-{rent_year}"
+
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+
+        # -------------------------------------------------
+        # Get all 6 houses with active tenant + month rent
+        # -------------------------------------------------
+        cursor.execute("""
+            SELECT
+                h.id AS house_id,
+                h.house_no,
+                h.status AS house_status,
+                t.id AS tenant_id,
+                t.name AS tenant_name,
+                t.phone,
+                t.monthly_rent,
+                t.status AS tenant_status,
+                r.id AS rent_id,
+                r.month_name,
+                r.rent_amount,
+                r.paid_amount,
+                r.balance,
+                r.status AS rent_status,
+                r.payment_date
+            FROM houses h
+            LEFT JOIN tenants t
+                ON h.id = t.house_id
+                AND t.status = 'ACTIVE'
+            LEFT JOIN monthly_rent r
+                ON t.id = r.tenant_id
+                AND r.month_name = %s
+            ORDER BY h.id
+        """, (month_name,))
+
+        rows = cursor.fetchall()
+
+        # -------------------------------------------------
+        # Overall monthly totals
+        # -------------------------------------------------
+        cursor.execute("""
+            SELECT
+                COUNT(*) AS rent_record_count,
+                COALESCE(SUM(rent_amount), 0) AS total_rent_amount,
+                COALESCE(SUM(paid_amount), 0) AS total_paid_amount,
+                COALESCE(SUM(balance), 0) AS total_balance
+            FROM monthly_rent
+            WHERE month_name = %s
+        """, (month_name,))
+
+        totals = cursor.fetchone() or {}
+
+        total_rent = float(totals.get("total_rent_amount") or 0)
+        total_paid = float(totals.get("total_paid_amount") or 0)
+        total_balance = float(totals.get("total_balance") or 0)
+
+        # -------------------------------------------------
+        # Current active / vacant counts
+        # -------------------------------------------------
+        cursor.execute("""
+            SELECT COUNT(*) AS active_tenants
+            FROM tenants
+            WHERE status = 'ACTIVE'
+        """)
+        active_row = cursor.fetchone() or {}
+        active_tenants = int(active_row.get("active_tenants") or 0)
+
+        cursor.execute("""
+            SELECT COUNT(*) AS vacant_houses
+            FROM houses
+            WHERE status = 'VACANT'
+        """)
+        vacant_row = cursor.fetchone() or {}
+        vacant_houses = int(vacant_row.get("vacant_houses") or 0)
+
+        # Houses represented by the monthly rent records.
+        cursor.execute("""
+            SELECT COUNT(DISTINCT tenant_id) AS month_tenants
+            FROM monthly_rent
+            WHERE month_name = %s
+        """, (month_name,))
+        month_tenant_row = cursor.fetchone() or {}
+        month_tenants = int(month_tenant_row.get("month_tenants") or 0)
+
+        # -------------------------------------------------
+        # Prepare house-wise details
+        # -------------------------------------------------
+        details = []
+
+        for row in rows:
+            rent_amount = float(row.get("rent_amount") or row.get("monthly_rent") or 0)
+            paid_amount = float(row.get("paid_amount") or 0)
+            balance = float(row.get("balance") or max(rent_amount - paid_amount, 0))
+
+            tenant_name = row.get("tenant_name")
+            rent_id = row.get("rent_id")
+
+            if tenant_name is None:
+                display_status = "VACANT"
+            elif rent_id is None:
+                display_status = "UNPAID"
+            else:
+                display_status = normalize_status(
+                    row.get("rent_status"),
+                    rent_amount,
+                    paid_amount
+                )
+
+            details.append({
+                "house_id": row["house_id"],
+                "house_no": row["house_no"],
+                "house_status": row.get("house_status"),
+                "tenant_id": row.get("tenant_id"),
+                "tenant_name": tenant_name,
+                "phone": row.get("phone"),
+                "rent_id": rent_id,
+                "rent_month": month_name,
+                "rent_amount": rent_amount,
+                "paid_amount": paid_amount,
+                "balance": balance,
+                "status": display_status,
+                "payment_date": (
+                    str(row["payment_date"])
+                    if row.get("payment_date") else None
+                )
+            })
+
+        return jsonify({
+            "success": True,
+            "message": f"Monthly summary for {month_name}",
+            "month": rent_month,
+            "year": rent_year,
+            "month_name": month_name,
+            "summary": {
+                "total_rent_amount": total_rent,
+                "total_paid_amount": total_paid,
+                "total_unpaid_amount": total_balance,
+                "total_balance": total_balance,
+                "total_tenants": month_tenants,
+                "active_tenants": active_tenants,
+                "vacant_houses": vacant_houses,
+                "total_houses": len(details)
+            },
+            "details": details,
+            "data": details
+        }), 200
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": "Failed to get monthly rent summary",
+            "error": str(e)
+        }), 500
+
+    finally:
+        close_db(db, cursor)
+
+
+# =====================================================
+# MONTHLY RENT COLLECTION / SUMMARY PDF
+# Supports /download-monthly-summary and
+# /api/download-monthly-summary
+# =====================================================
+
+@app.route(
+    "/download-monthly-summary/<int:rent_month>/<int:rent_year>",
+    methods=["GET"]
+)
+@app.route(
+    "/api/download-monthly-summary/<int:rent_month>/<int:rent_year>",
+    methods=["GET"]
+)
+def download_monthly_summary(rent_month, rent_year):
+    db = None
+    cursor = None
+
+    try:
+        if rent_month < 1 or rent_month > 12:
+            return jsonify({
+                "success": False,
+                "message": "Invalid rent month"
+            }), 400
+
+        month_name = f"{rent_month:02d}-{rent_year}"
+
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT
+                h.id AS house_id,
+                h.house_no,
+                h.status AS house_status,
+                t.id AS tenant_id,
+                t.name AS tenant_name,
+                t.phone,
+                t.monthly_rent,
+                r.id AS rent_id,
+                r.rent_amount,
+                r.paid_amount,
+                r.balance,
+                r.status AS rent_status,
+                r.payment_date
+            FROM houses h
+            LEFT JOIN tenants t
+                ON h.id = t.house_id
+                AND t.status = 'ACTIVE'
+            LEFT JOIN monthly_rent r
+                ON t.id = r.tenant_id
+                AND r.month_name = %s
+            ORDER BY h.id
+        """, (month_name,))
+
+        rows = cursor.fetchall()
+
+        cursor.execute("""
+            SELECT
+                COALESCE(SUM(rent_amount), 0) AS total_rent_amount,
+                COALESCE(SUM(paid_amount), 0) AS total_paid_amount,
+                COALESCE(SUM(balance), 0) AS total_balance,
+                COUNT(DISTINCT tenant_id) AS total_tenants
+            FROM monthly_rent
+            WHERE month_name = %s
+        """, (month_name,))
+
+        totals = cursor.fetchone() or {}
+
+        total_rent = float(totals.get("total_rent_amount") or 0)
+        total_paid = float(totals.get("total_paid_amount") or 0)
+        total_balance = float(totals.get("total_balance") or 0)
+        total_tenants = int(totals.get("total_tenants") or 0)
+
+        cursor.execute("""
+            SELECT COUNT(*) AS active_tenants
+            FROM tenants
+            WHERE status = 'ACTIVE'
+        """)
+        active_tenants = int(
+            (cursor.fetchone() or {}).get("active_tenants") or 0
+        )
+
+        cursor.execute("""
+            SELECT COUNT(*) AS vacant_houses
+            FROM houses
+            WHERE status = 'VACANT'
+        """)
+        vacant_houses = int(
+            (cursor.fetchone() or {}).get("vacant_houses") or 0
+        )
+
+        pdf_buffer = BytesIO()
+
+        doc = SimpleDocTemplate(
+            pdf_buffer,
+            pagesize=A4,
+            rightMargin=30,
+            leftMargin=30,
+            topMargin=30,
+            bottomMargin=30
+        )
+
+        styles = getSampleStyleSheet()
+
+        title_style = ParagraphStyle(
+            "SummaryTitle",
+            parent=styles["Title"],
+            alignment=TA_CENTER,
+            fontSize=20,
+            spaceAfter=6
+        )
+
+        subtitle_style = ParagraphStyle(
+            "SummarySubtitle",
+            parent=styles["Normal"],
+            alignment=TA_CENTER,
+            fontSize=12,
+            textColor=colors.grey,
+            spaceAfter=18
+        )
+
+        heading_style = ParagraphStyle(
+            "SummaryHeading",
+            parent=styles["Heading2"],
+            fontSize=13,
+            spaceBefore=12,
+            spaceAfter=8
+        )
+
+        story = [
+            Paragraph("APARTMENT RENT MANAGER", title_style),
+            Paragraph(
+                f"Monthly Rent Collection Report - {month_name}",
+                subtitle_style
+            )
+        ]
+
+        summary_data = [
+            ["Summary", "Value"],
+            ["Total Rent Amount", f"INR {total_rent:,.2f}"],
+            ["Total Paid Amount", f"INR {total_paid:,.2f}"],
+            ["Total Unpaid / Balance", f"INR {total_balance:,.2f}"],
+            ["Total Tenants", str(total_tenants)],
+            ["Active Tenants", str(active_tenants)],
+            ["Vacant Houses", str(vacant_houses)],
+            ["Total Houses", str(len(rows))]
+        ]
+
+        summary_table = Table(
+            summary_data,
+            colWidths=[250, 220],
+            hAlign="CENTER"
+        )
+
+        summary_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCEBFF")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 10.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 7),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 7)
+        ]))
+
+        story.append(summary_table)
+        story.append(Spacer(1, 18))
+        story.append(Paragraph("House / Tenant Details", heading_style))
+
+        detail_data = [[
+            "House", "Tenant", "Rent", "Paid", "Balance", "Status"
+        ]]
+
+        for row in rows:
+            rent_amount = float(
+                row.get("rent_amount") or row.get("monthly_rent") or 0
+            )
+            paid_amount = float(row.get("paid_amount") or 0)
+            balance = float(
+                row.get("balance")
+                if row.get("balance") is not None
+                else max(rent_amount - paid_amount, 0)
+            )
+
+            tenant_name = row.get("tenant_name") or "-"
+            rent_id = row.get("rent_id")
+
+            if tenant_name == "-":
+                display_status = "VACANT"
+            elif rent_id is None:
+                display_status = "UNPAID"
+            else:
+                display_status = normalize_status(
+                    row.get("rent_status"),
+                    rent_amount,
+                    paid_amount
+                )
+
+            detail_data.append([
+                str(row.get("house_no") or "-"),
+                str(tenant_name),
+                f"INR {rent_amount:,.0f}",
+                f"INR {paid_amount:,.0f}",
+                f"INR {balance:,.0f}",
+                display_status
+            ])
+
+        detail_table = Table(
+            detail_data,
+            colWidths=[55, 135, 75, 75, 75, 75],
+            repeatRows=1,
+            hAlign="CENTER"
+        )
+
+        detail_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCEBFF")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8.5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 6),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 6)
+        ]))
+
+        story.append(detail_table)
+        story.append(Spacer(1, 20))
+        story.append(
+            Paragraph(
+                "Generated by Apartment Rent Manager",
+                styles["Normal"]
+            )
+        )
+
+        doc.build(story)
+        pdf_buffer.seek(0)
+
+        return send_file(
+            pdf_buffer,
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=f"monthly_summary_{rent_month:02d}_{rent_year}.pdf"
+        )
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "message": "Failed to generate monthly summary PDF",
             "error": str(e)
         }), 500
 
