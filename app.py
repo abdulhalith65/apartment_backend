@@ -31,8 +31,8 @@ TIDB_HOST = os.getenv(
 )
 
 TIDB_PORT = int(os.getenv("TIDB_PORT", "4000"))
-TIDB_USER = os.getenv("TIDB_USER", "3io5k8AZVpUgrQe.root")
-TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "FEhaGtskVc3rrTp2")
+TIDB_USER = os.getenv("TIDB_USER", "")
+TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "")
 TIDB_DATABASE = os.getenv("TIDB_DB_NAME", "test")
 TIDB_CA_PATH = os.getenv("TIDB_CA_PATH", "")
 
@@ -1637,37 +1637,6 @@ def download_monthly_summary(rent_month, rent_year):
                 subtitle_style
             )
         ]
-
-        summary_data = [
-            ["Summary", "Value"],
-            ["Total Rent Amount", f"INR {total_rent:,.2f}"],
-            ["Total Paid Amount", f"INR {total_paid:,.2f}"],
-            ["Total Unpaid / Balance", f"INR {total_balance:,.2f}"],
-            ["Total Tenants", str(total_tenants)],
-            ["Active Tenants", str(active_tenants)],
-            ["Vacant Houses", str(vacant_houses)],
-            ["Total Houses", str(len(rows))]
-        ]
-
-        summary_table = Table(
-            summary_data,
-            colWidths=[250, 220],
-            hAlign="CENTER"
-        )
-
-        summary_table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#DCEBFF")),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTNAME", (0, 1), (0, -1), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 10.5),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 7),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 7)
-        ]))
-
-        story.append(summary_table)
-        story.append(Spacer(1, 18))
         story.append(Paragraph("House / Tenant Details", heading_style))
 
         detail_data = [[
