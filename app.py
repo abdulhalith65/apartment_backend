@@ -64,9 +64,9 @@ TIDB_HOST = os.getenv(
 
 TIDB_PORT = int(os.getenv("TIDB_PORT", "4000"))
 
-TIDB_USER = os.getenv("TIDB_USER", "")
+TIDB_USER = os.getenv("TIDB_USER", "3io5k8AZVpUgrQe.root")
 
-TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "")
+TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "FEhaGtskVc3rrTp2")
 
 TIDB_DATABASE = os.getenv("TIDB_DB_NAME", "test")
 
@@ -1164,6 +1164,107 @@ def get_tenant(tenant_id):
 
 
 
+
+
+# =====================================================
+# UPDATE TENANT DETAILS
+# =====================================================
+
+@app.route("/api/tenants/<int:tenant_id>", methods=["PUT"])
+def update_tenant(tenant_id):
+
+    db = None
+    cursor = None
+
+    try:
+        data = request.get_json(silent=True) or {}
+
+        name = data.get("name")
+        phone = data.get("phone", "")
+        monthly_rent = data.get("monthly_rent")
+        advance_received = data.get("advance_received", 0)
+
+        if name is None or not str(name).strip():
+            return jsonify({
+                "success": False,
+                "message": "Tenant name is required."
+            }), 400
+
+        try:
+            monthly_rent = float(monthly_rent)
+            advance_received = float(advance_received)
+        except (TypeError, ValueError):
+            return jsonify({
+                "success": False,
+                "message": "Monthly rent and advance must be numbers."
+            }), 400
+
+        if monthly_rent < 0 or advance_received < 0:
+            return jsonify({
+                "success": False,
+                "message": "Monthly rent and advance cannot be negative."
+            }), 400
+
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+
+        cursor.execute("""
+            SELECT id, status
+            FROM tenants
+            WHERE id = %s
+            LIMIT 1
+        """, (tenant_id,))
+
+        tenant = cursor.fetchone()
+
+        if tenant is None:
+            return jsonify({
+                "success": False,
+                "message": "Tenant not found."
+            }), 404
+
+        if tenant.get("status") != "ACTIVE":
+            return jsonify({
+                "success": False,
+                "message": "Only an active tenant can be updated."
+            }), 400
+
+        cursor.execute("""
+            UPDATE tenants
+            SET
+                name = %s,
+                phone = %s,
+                monthly_rent = %s,
+                advance_received = %s
+            WHERE id = %s
+        """, (
+            str(name).strip(),
+            str(phone).strip(),
+            monthly_rent,
+            advance_received,
+            tenant_id
+        ))
+
+        db.commit()
+
+        return jsonify({
+            "success": True,
+            "message": "Tenant details updated successfully.",
+            "tenant_id": tenant_id
+        }), 200
+
+    except Exception as e:
+        if db is not None:
+            db.rollback()
+
+        return jsonify({
+            "success": False,
+            "message": "Failed to update tenant details.",
+            "error": str(e)
+        }), 500
+
+    finally:
+        close_db(db, cursor)
 
 
 # =====================================================
