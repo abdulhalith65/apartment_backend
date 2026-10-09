@@ -77,10 +77,10 @@ TIDB_HOST = os.getenv(
 TIDB_PORT = int(os.getenv("TIDB_PORT", "4000"))
 
 
-TIDB_USER = os.getenv("TIDB_USER", "").strip()
+TIDB_USER = os.getenv("TIDB_USER", "3io5k8AZVpUgrQe.root").strip()
 
 
-TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "")
+TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "FEhaGtskVc3rrTp2")
 
 
 TIDB_DATABASE = os.getenv("TIDB_DB_NAME", "test")
