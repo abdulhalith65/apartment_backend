@@ -157,13 +157,13 @@ TIDB_PORT = int(os.getenv("TIDB_PORT", "4000"))
 
 
 
-TIDB_USER = os.getenv("TIDB_USER", "").strip()
+TIDB_USER = os.getenv("TIDB_USER", "3io5k8AZVpUgrQe.root").strip()
 
 
 
 
 
-TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "")
+TIDB_PASSWORD = os.getenv("TIDB_PASSWORD", "FEhaGtskVc3rrTp2")
 
 
 
@@ -1575,6 +1575,75 @@ def add_house():
     finally:
         close_db(db, cursor)
 
+
+
+# =====================================================
+# DELETE HOUSE
+# Only remove houses with no tenant records so rent/tenant history is protected.
+# Supports DELETE /houses/<house_id> and DELETE /api/houses/<house_id>.
+# =====================================================
+
+@app.route("/houses/<int:house_id>", methods=["DELETE"])
+@app.route("/api/houses/<int:house_id>", methods=["DELETE"])
+def delete_house(house_id):
+    db = None
+    cursor = None
+
+    try:
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+
+        cursor.execute(
+            "SELECT id, house_no FROM houses WHERE id = %s LIMIT 1",
+            (house_id,)
+        )
+        house = cursor.fetchone()
+        if house is None:
+            return jsonify({
+                "success": False,
+                "message": "House not found. Refresh the house list and try again."
+            }), 404
+
+        # Do not delete records that have an active OR previous tenant.
+        # This prevents losing tenant details and rent history.
+        cursor.execute(
+            "SELECT COUNT(*) AS tenant_count FROM tenants WHERE house_id = %s",
+            (house_id,)
+        )
+        count_row = cursor.fetchone() or {}
+        tenant_count = int(count_row.get("tenant_count") or 0)
+        if tenant_count > 0:
+            return jsonify({
+                "success": False,
+                "message": (
+                    f"Cannot remove {house['house_no']}: tenant records or rent history are linked to it. "
+                    "Only an empty house with no tenant history can be removed."
+                )
+            }), 409
+
+        cursor.execute("DELETE FROM houses WHERE id = %s", (house_id,))
+        db.commit()
+
+        return jsonify({
+            "success": True,
+            "message": f"{house['house_no']} removed successfully.",
+            "house_id": house_id,
+            "house_no": house["house_no"]
+        }), 200
+
+    except Exception as e:
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return jsonify({
+            "success": False,
+            "message": "Failed to remove house.",
+            "error": str(e)
+        }), 500
+    finally:
+        close_db(db, cursor)
 
 
 # ADD TENANT
