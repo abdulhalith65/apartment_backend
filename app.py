@@ -1112,6 +1112,13 @@ def get_houses():
 
 
         cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hidden_houses (
+                house_id INT PRIMARY KEY,
+                hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+
+        cursor.execute("""
 
 
 
@@ -1226,6 +1233,24 @@ def get_houses():
 
 
                 AND t.status = 'ACTIVE'
+
+
+
+
+
+            LEFT JOIN hidden_houses hh
+
+
+
+
+
+                ON hh.house_id = h.id
+
+
+
+
+
+            WHERE hh.house_id IS NULL
 
 
 
@@ -1578,9 +1603,11 @@ def add_house():
 
 
 # =====================================================
-# DELETE HOUSE
-# Only remove houses with no tenant records so rent/tenant history is protected.
+# =====================================================
+# PERMANENTLY DELETE HOUSE AND ALL LINKED RECORDS
 # Supports DELETE /houses/<house_id> and DELETE /api/houses/<house_id>.
+# This permanently removes this house, its tenant rows, and linked rent history.
+# The Android app shows a confirmation dialog before calling this endpoint.
 # =====================================================
 
 @app.route("/houses/<int:house_id>", methods=["DELETE"])
@@ -1590,8 +1617,23 @@ def delete_house(house_id):
     cursor = None
 
     try:
+        if house_id <= 0:
+            return jsonify({
+                "success": False,
+                "message": "Invalid house ID."
+            }), 400
+
         db = get_db_connection()
         cursor = db.cursor(dictionary=True)
+
+        # Ensure the optional dashboard-hiding table exists so any old hide
+        # marker is removed together with the house.
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hidden_houses (
+                house_id INT PRIMARY KEY,
+                hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
 
         cursor.execute(
             "SELECT id, house_no FROM houses WHERE id = %s LIMIT 1",
@@ -1604,31 +1646,46 @@ def delete_house(house_id):
                 "message": "House not found. Refresh the house list and try again."
             }), 404
 
-        # Do not delete records that have an active OR previous tenant.
-        # This prevents losing tenant details and rent history.
+        # Delete rent history first because it references tenant IDs.
+        # Then delete all active and vacated tenant rows for this house.
         cursor.execute(
-            "SELECT COUNT(*) AS tenant_count FROM tenants WHERE house_id = %s",
+            "DELETE FROM monthly_rent "
+            "WHERE tenant_id IN (SELECT id FROM tenants WHERE house_id = %s)",
             (house_id,)
         )
-        count_row = cursor.fetchone() or {}
-        tenant_count = int(count_row.get("tenant_count") or 0)
-        if tenant_count > 0:
-            return jsonify({
-                "success": False,
-                "message": (
-                    f"Cannot remove {house['house_no']}: tenant records or rent history are linked to it. "
-                    "Only an empty house with no tenant history can be removed."
-                )
-            }), 409
+        rent_records_deleted = max(cursor.rowcount, 0)
 
-        cursor.execute("DELETE FROM houses WHERE id = %s", (house_id,))
+        cursor.execute(
+            "DELETE FROM tenants WHERE house_id = %s",
+            (house_id,)
+        )
+        tenant_records_deleted = max(cursor.rowcount, 0)
+
+        cursor.execute(
+            "DELETE FROM hidden_houses WHERE house_id = %s",
+            (house_id,)
+        )
+
+        cursor.execute(
+            "DELETE FROM houses WHERE id = %s",
+            (house_id,)
+        )
+        if cursor.rowcount != 1:
+            raise RuntimeError("House could not be deleted; no house row was removed.")
+
         db.commit()
 
         return jsonify({
             "success": True,
-            "message": f"{house['house_no']} removed successfully.",
+            "message": (
+                f"{house['house_no']} and all linked tenant and rent history "
+                "records were permanently deleted."
+            ),
             "house_id": house_id,
-            "house_no": house["house_no"]
+            "house_no": house["house_no"],
+            "tenant_records_deleted": tenant_records_deleted,
+            "rent_records_deleted": rent_records_deleted,
+            "permanent": True
         }), 200
 
     except Exception as e:
@@ -1639,11 +1696,64 @@ def delete_house(house_id):
                 pass
         return jsonify({
             "success": False,
-            "message": "Failed to remove house.",
+            "message": "Failed to permanently delete the house and linked records.",
             "error": str(e)
         }), 500
     finally:
         close_db(db, cursor)
+
+
+# HIDE HOUSE
+# Hides a house from the dashboard without deleting tenant or rent history.
+# =====================================================
+
+@app.route("/houses/<int:house_id>/hide", methods=["POST"])
+@app.route("/api/houses/<int:house_id>/hide", methods=["POST"])
+def hide_house(house_id):
+    db = None
+    cursor = None
+    try:
+        db = get_db_connection()
+        cursor = db.cursor(dictionary=True)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS hidden_houses (
+                house_id INT PRIMARY KEY,
+                hidden_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        cursor.execute(
+            "SELECT id, house_no FROM houses WHERE id = %s LIMIT 1",
+            (house_id,)
+        )
+        house = cursor.fetchone()
+        if house is None:
+            return jsonify({"success": False, "message": "House not found."}), 404
+
+        cursor.execute(
+            "INSERT IGNORE INTO hidden_houses (house_id) VALUES (%s)",
+            (house_id,)
+        )
+        db.commit()
+        return jsonify({
+            "success": True,
+            "message": f"{house['house_no']} hidden from the dashboard. Tenant details and rent history are preserved.",
+            "house_id": house_id,
+            "house_no": house["house_no"]
+        }), 200
+    except Exception as e:
+        if db is not None:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        return jsonify({
+            "success": False,
+            "message": "Failed to hide house.",
+            "error": str(e)
+        }), 500
+    finally:
+        close_db(db, cursor)
+
 
 
 # ADD TENANT
